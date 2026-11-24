@@ -2,6 +2,7 @@ package it.flubatir.coreassistant
 
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.OutputStreamWriter
@@ -68,8 +69,9 @@ class Brain(private val ctx: Context) {
         val now = SimpleDateFormat("EEEE d MMMM yyyy, HH:mm", Locale.ITALY).format(Date())
         val facts = Prefs.facts(ctx)
         return buildString {
-            append("Sei GPT CORE, l'assistente vocale personale di ${Prefs.userName(ctx)} sul suo telefono Android (${Build.MANUFACTURER} ${Build.MODEL}). Ora: $now.\n")
+            append("Sei GPT CORE, l'assistente vocale personale di ${Prefs.displayName(ctx)} sul suo telefono Android (${Build.MANUFACTURER} ${Build.MODEL}). Ora: $now.\n")
             append("Il tuo creatore e' Flubatir. Parla in italiano (o nella lingua dell'utente), con voce calda, sicura e naturale, come un assistente umano molto in gamba.\n")
+            if (Prefs.userName(ctx).isNotBlank()) append("L'utente si chiama ${Prefs.userName(ctx)}: chiamalo per nome quando e' naturale, senza esagerare.\n")
             append("REGOLE:\n")
             append("- Le tue risposte vengono lette ad alta voce: frasi brevi, niente markdown, niente elenchi puntati, niente emoji, niente URL letti per intero. Di solito 1-2 frasi.\n")
             append("- Se la richiesta e' un'azione sul telefono, usa SUBITO lo strumento giusto senza chiedere conferme inutili; poi conferma in modo breve (\"Apro WhatsApp\", \"Chiamo Marco\").\n")
@@ -80,11 +82,18 @@ class Brain(private val ctx: Context) {
             append("- Non inventare contatti, numeri o app: usa solo cio' che gli strumenti restituiscono. Se uno strumento fallisce, spiega onestamente cosa non e' andato e cosa si puo' fare.\n")
             append("- Se la tua risposta e' una domanda all'utente, terminala con un punto di domanda: il microfono si riaprira' da solo.\n")
             append("- Se l'utente dice 'ricorda che...' usa remember. Usa la memoria qui sotto per capire soprannomi e preferenze.\n")
+            when (Prefs.webMode(ctx)) {
+                "always" -> append("- RICERCA WEB SEMPRE ATTIVA: per ogni domanda su fatti, persone, luoghi, eventi o dati usa web_answer prima di rispondere.\n")
+                "off" -> append("- La ricerca web e' disattivata: non puoi cercare su internet. Se serve un dato aggiornato dillo onestamente.\n")
+            }
+            val extra = Config.systemPrompt(ctx)
+            if (extra.isNotEmpty()) append("ISTRUZIONI DEL CREATORE:\n" + extra + "\n")
             if (facts.isNotEmpty()) append("MEMORIA:\n" + facts.joinToString("\n") { "- $it" } + "\n")
         }
     }
 
     private class Http(val code: Int, val body: String)
+    private class Gen(val h: Http, val tried: List<String>)
 
     private fun post(model: String, payload: JSONObject, timeoutMs: Int = 40000): Http {
         val url = URL(BASE + model + ":generateContent")
@@ -101,26 +110,98 @@ class Brain(private val ctx: Context) {
         return Http(code, body)
     }
 
-    private fun errorText(h: Http): String {
+    /** Errori "passeggeri": sovraccarico, quota, "riprova piu' tardi". Conviene riprovare o cambiare modello. */
+    private fun retriable(h: Http): Boolean {
+        if (h.code == 429 || h.code in 500..599) return true
+        val b = h.body.lowercase()
+        return b.contains("overloaded") || b.contains("unavailable") || b.contains("try again later") ||
+            b.contains("high demand") || b.contains("resource_exhausted") || b.contains("deadline")
+    }
+
+    /** Il modello non esiste / non supporta la richiesta: inutile riprovarlo, meglio il prossimo. */
+    private fun modelProblem(h: Http): Boolean {
+        if (h.code == 404) return true
+        if (h.code != 400) return false
+        val b = h.body.lowercase()
+        if (b.contains("api key")) return false
+        return b.contains("not supported") || b.contains("not found") || b.contains("unsupported") || b.contains("is not available")
+    }
+
+    private fun genConfig(model: String, thinking: Boolean): JSONObject {
+        val g = JSONObject().put("temperature", 0.6)
+        // niente "ragionamento" lungo: risposte piu' rapide (solo i flash 2.5 lo permettono)
+        if (thinking && Regex("gemini-2\\.5-flash").containsMatchIn(model)) g.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+        return g
+    }
+
+    /**
+     * Chiama Gemini con ripiego automatico: ritenta una volta se e' solo occupato, poi passa al modello piu' simile
+     * (stessa famiglia/versione vicina) finche' qualcuno risponde. Errori di chiave o di richiesta non fanno cambiare modello.
+     */
+    private fun generate(build: (String, Boolean) -> JSONObject, timeoutMs: Int, onStatus: (String) -> Unit): Gen {
+        val auto = Prefs.autoFallback(ctx)
+        val chain = if (auto) Models.chain(ctx) else listOf(Prefs.model(ctx))
+        val ordered = chain.filter { !Models.isCooling(it) }.ifEmpty { chain }
+        val deadline = SystemClock.elapsedRealtime() + 75_000L
+        val tried = ArrayList<String>()
+        var last: Http? = null
+        var netErr: java.io.IOException? = null
+        for ((i, m) in ordered.withIndex()) {
+            if (i > 0 && SystemClock.elapsedRealtime() > deadline) break
+            tried.add(m)
+            if (i > 0) onStatus("Provo con $m…")
+            var thinking = true
+            var attempt = 0
+            while (attempt < 2) {
+                attempt++
+                val h: Http? = try {
+                    post(m, build(m, thinking), if (i == 0) timeoutMs else minOf(timeoutMs, 28000))
+                } catch (e: java.net.UnknownHostException) { throw e }
+                catch (e: java.io.IOException) { netErr = e; null }
+                if (h == null) {
+                    if (attempt == 1) { Thread.sleep(400); continue }
+                    Models.markBad(m, 30_000L); break
+                }
+                last = h
+                if (h.code in 200..299) { Models.markGood(m); Prefs.setLastModel(ctx, m); return Gen(h, tried) }
+                if (h.code == 400 && thinking && h.body.contains("thinking", true)) { thinking = false; attempt--; continue }
+                if (retriable(h)) {
+                    if (attempt == 1 && h.code != 429) { onStatus("Gemini è occupato, riprovo…"); Thread.sleep(900); continue }
+                    Models.markBad(m, if (h.code == 429) 120_000L else 60_000L); break
+                }
+                if (modelProblem(h)) { Models.markBad(m, 600_000L); break }
+                return Gen(h, tried)   // errore non legato al modello (chiave, richiesta): inutile cambiare
+            }
+        }
+        if (last != null) return Gen(last, tried)
+        throw netErr ?: java.io.IOException("nessuna risposta")
+    }
+
+    private fun errorText(g: Gen): String {
+        val h = g.h
         val msg = try { JSONObject(h.body).getJSONObject("error").getString("message") } catch (e: Exception) { "" }
         return when {
             h.code == 400 && msg.contains("API key", true) -> "La chiave API di Gemini non è valida. Controllala nelle impostazioni dell'app."
             h.code == 403 -> "La chiave API non ha i permessi necessari."
+            retriable(h) && g.tried.size > 1 -> "Gemini è molto carico: ho provato ${g.tried.joinToString(", ")} ma nessun modello ha risposto. Riprova tra poco."
+            retriable(h) && !Prefs.autoFallback(ctx) -> "Il modello ${g.tried.firstOrNull() ?: ""} è occupato. Attiva nelle impostazioni il passaggio automatico al modello più simile, oppure riprova tra poco."
             h.code == 429 -> "Ho finito la quota gratuita di Gemini per ora. Riprova tra poco."
             h.code >= 500 -> "I server di Gemini sono momentaneamente in difficoltà. Riprova tra un attimo."
             else -> "Errore di Gemini ${h.code}. $msg".take(160)
         }
     }
 
-    /** Ricerca web vera tramite il grounding di Google Search. */
-    private fun webAnswer(query: String): JSONObject {
-        val p = JSONObject()
-            .put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text",
-                "Rispondi in italiano in modo sintetico e preciso (massimo 4 frasi), con dati aggiornati. Oggi e' " + SimpleDateFormat("d MMMM yyyy", Locale.ITALY).format(Date()) + "."))))
-            .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", query)))))
-            .put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
-        val h = post(Prefs.model(ctx), p, 45000)
-        if (h.code !in 200..299) return JSONObject().put("ok", false).put("error", errorText(h))
+    /** Ricerca web vera tramite il grounding di Google Search (con lo stesso ripiego sui modelli). */
+    private fun webAnswer(query: String, onStatus: (String) -> Unit): JSONObject {
+        val sys = "Rispondi in italiano in modo sintetico e preciso (massimo 4 frasi), con dati aggiornati. Oggi e' " + SimpleDateFormat("d MMMM yyyy", Locale.ITALY).format(Date()) + "."
+        val g = generate({ _, _ ->
+            JSONObject()
+                .put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
+                .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", query)))))
+                .put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
+        }, 45000, onStatus)
+        val h = g.h
+        if (h.code !in 200..299) return JSONObject().put("ok", false).put("error", errorText(g))
         val j = JSONObject(h.body)
         val cand = j.optJSONArray("candidates")?.optJSONObject(0) ?: return JSONObject().put("ok", false).put("error", "nessun risultato")
         val parts = cand.optJSONObject("content")?.optJSONArray("parts") ?: JSONArray()
@@ -130,6 +211,14 @@ class Brain(private val ctx: Context) {
         val chunks = cand.optJSONObject("groundingMetadata")?.optJSONArray("groundingChunks")
         if (chunks != null) for (i in 0 until minOf(3, chunks.length())) srcs.put(chunks.getJSONObject(i).optJSONObject("web")?.optString("title") ?: "")
         return JSONObject().put("ok", true).put("risposta", sb.toString().trim()).put("fonti", srcs)
+    }
+
+    /** Strumenti disponibili in base alla modalita' di ricerca web scelta. */
+    private fun activeDeclarations(): JSONArray {
+        if (Prefs.webMode(ctx) != "off") return declarations
+        val out = JSONArray()
+        for (i in 0 until declarations.length()) { val d = declarations.getJSONObject(i); if (d.optString("name") != "web_answer") out.put(d) }
+        return out
     }
 
     private fun trimHistory() {
@@ -158,13 +247,18 @@ class Brain(private val ctx: Context) {
         try {
             for (round in 0 until 7) {
                 trimHistory()
-                val payload = JSONObject()
-                    .put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemPrompt()))))
-                    .put("contents", synchronized(history) { JSONArray(history.toString()) })
-                    .put("tools", JSONArray().put(JSONObject().put("function_declarations", declarations)))
-                    .put("generationConfig", JSONObject().put("temperature", 0.6).put("thinkingConfig", JSONObject().put("thinkingBudget", 0)))
-                val h = post(Prefs.model(ctx), payload)
-                if (h.code !in 200..299) return Reply(errorText(h), false, cards, emptyList())
+                val sys = systemPrompt()
+                val hist = synchronized(history) { JSONArray(history.toString()) }
+                val decl = activeDeclarations()
+                val g = generate({ model, thinking ->
+                    JSONObject()
+                        .put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
+                        .put("contents", hist)
+                        .put("tools", JSONArray().put(JSONObject().put("function_declarations", decl)))
+                        .put("generationConfig", genConfig(model, thinking))
+                }, 40000, onStatus)
+                val h = g.h
+                if (h.code !in 200..299) return Reply(errorText(g), false, cards, emptyList())
                 val cand = JSONObject(h.body).optJSONArray("candidates")?.optJSONObject(0)
                 val content = cand?.optJSONObject("content")
                 val parts = content?.optJSONArray("parts")
@@ -186,7 +280,7 @@ class Brain(private val ctx: Context) {
                     val name = fc.getString("name"); val args = fc.optJSONObject("args") ?: JSONObject()
                     onStatus(statusFor(name))
                     val res: JSONObject = if (name == "web_answer") {
-                        try { webAnswer(args.optString("query")) } catch (e: Exception) { JSONObject().put("ok", false).put("error", "ricerca non riuscita: ${e.message}") }
+                        try { webAnswer(args.optString("query"), onStatus) } catch (e: Exception) { JSONObject().put("ok", false).put("error", "ricerca non riuscita: ${e.message}") }
                     } else {
                         val r = tools.execute(name, args)
                         r.card?.let { cards.add(it) }

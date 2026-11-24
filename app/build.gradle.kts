@@ -11,8 +11,15 @@ android {
         applicationId = "it.flubatir.coreassistant"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0"
+
+        // Schema di ritorno dell'accesso Google: ricavato da google.ios_client_id in src/main/assets/config.json
+        val cfgText = file("src/main/assets/config.json").takeIf { it.exists() }?.readText() ?: ""
+        val gid = Regex("\"ios_client_id\"\\s*:\\s*\"([^\"]*)\"").find(cfgText)?.groupValues?.get(1) ?: ""
+        manifestPlaceholders["googleScheme"] =
+            if (gid.isBlank()) "com.googleusercontent.apps.notconfigured"
+            else "com.googleusercontent.apps." + gid.removeSuffix(".apps.googleusercontent.com")
     }
 
     // Keystore fisso nel repository: ogni build e' firmata uguale, cosi' puoi aggiornare l'app senza disinstallarla.

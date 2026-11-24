@@ -44,6 +44,20 @@
             </intent-filter>
         </activity>
 
+        <!-- Accesso (Google / account locale). Lo schema di ritorno di Google arriva da config.json tramite build.gradle.kts -->
+        <activity
+            android:name=".AuthActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="${googleScheme}" />
+            </intent-filter>
+        </activity>
+
         <!-- Pannello assistente (si apre con pressione lunga su Home / gesto assistente) -->
         <activity
             android:name=".AssistActivity"
