@@ -13,13 +13,21 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
+      # packages vuoto: evita "sdkmanager tools" (pacchetto non piu' esistente)
       - name: Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      # Opzionale: se Gradle non scarica da solo piattaforma e build-tools,
+      # decommenta e adatta le versioni a compileSdk / buildToolsVersion
+      # - name: Installa pacchetti SDK
+      #   run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
