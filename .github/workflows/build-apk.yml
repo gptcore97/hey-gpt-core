@@ -1,4 +1,4 @@
-name: Build Android (APK)
+name: Build Android (A-P-K)
 
 on:
   push:
@@ -18,11 +18,8 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # packages vuoto: evita "sdkmanager tools" (pacchetto che non esiste piu', faceva fallire la build)
       - name: Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: ''
 
       - name: Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
