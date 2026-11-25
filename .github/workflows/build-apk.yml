@@ -1,4 +1,4 @@
-name: Build Android (A-P-K)
+name: Build Android (APK)
 
 on:
   push:
@@ -13,13 +13,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Java 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - name: Android SDK
-        uses: android-actions/setup-android@v3
+      # L'SDK Android e' gia' installato su ubuntu-latest: basta accettare le licenze
+      - name: Licenze Android SDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || yes | sdkmanager --licenses > /dev/null || true
 
       - name: Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
