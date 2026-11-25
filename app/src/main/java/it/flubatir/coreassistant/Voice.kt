@@ -122,7 +122,7 @@ object Speaker {
         if (clean.isEmpty()) { onDone(); return }
         Thread {
             var played = false
-            if (Prefs.geminiVoice(app) && Prefs.apiKey(app).isNotBlank() && clean.length < 700) {
+            if (Prefs.geminiVoice(app) && Prefs.geminiKey(app).isNotBlank() && clean.length < 700) {
                 try { played = geminiSpeak(app, clean, my, onStart) } catch (e: Exception) { played = false }
             }
             if (my != gen) return@Thread
@@ -159,7 +159,7 @@ object Speaker {
     private fun geminiSpeak(ctx: Context, text: String, my: Int, onStart: () -> Unit): Boolean {
         val payload = JSONObject()
             .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text",
-                "Leggi in italiano con tono naturale, caldo e disinvolto, a ritmo vivace: $text")))))
+                "Leggi in italiano, " + Prefs.voiceStyle(ctx).ifBlank { "con tono naturale, caldo e disinvolto, a ritmo vivace" } + ": $text")))))
             .put("generationConfig", JSONObject()
                 .put("responseModalities", JSONArray().put("AUDIO"))
                 .put("speechConfig", JSONObject().put("voiceConfig", JSONObject().put("prebuiltVoiceConfig",
@@ -167,7 +167,7 @@ object Speaker {
         val c = URL(Brain.BASE + "gemini-2.5-flash-preview-tts:generateContent").openConnection() as HttpURLConnection
         c.requestMethod = "POST"
         c.setRequestProperty("Content-Type", "application/json")
-        c.setRequestProperty("x-goog-api-key", Prefs.apiKey(ctx))
+        c.setRequestProperty("x-goog-api-key", Prefs.geminiKey(ctx))
         c.connectTimeout = 8000; c.readTimeout = 20000; c.doOutput = true
         OutputStreamWriter(c.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
         if (c.responseCode !in 200..299) { c.disconnect(); return false }

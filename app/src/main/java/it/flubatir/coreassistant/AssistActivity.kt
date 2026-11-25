@@ -179,8 +179,7 @@ class AssistActivity : Activity(), Listener.Callbacks {
         ui.removeCallbacks(closeTask)
         Speaker.stop()
         actionBtn.visibility = View.GONE
-        if (!Prefs.loggedIn(this)) { showSetup("Accedi a GPT CORE per usare l'assistente.", "Apri GPT CORE") { openApp() }; return }
-        if (Prefs.apiKey(this).isBlank()) { showSetup("Per iniziare serve la chiave API di Gemini (gratuita). Inseriscila nell'app.", "Apri GPT CORE") { openApp() }; return }
+        if (!Brain.ready(this)) { showSetup("Per iniziare aggiungi una API (e un modello) dallo Store dell'app.", "Apri GPT CORE") { openApp() }; return }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 7); return
         }

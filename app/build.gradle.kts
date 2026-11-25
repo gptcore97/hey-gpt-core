@@ -3,6 +3,15 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Schema di ritorno del login Google, ricavato da assets/www/config.json (android_client_id oppure ios_client_id)
+val googleScheme: String = run {
+    val f = file("src/main/assets/www/config.json")
+    val txt = if (f.exists()) f.readText() else ""
+    fun pick(k: String) = Regex("\"" + k + "\"\\s*:\\s*\"([^\"]+)\"").find(txt)?.groupValues?.get(1)
+    val id = pick("android_client_id") ?: pick("ios_client_id") ?: ""
+    if (id.isBlank()) "gptcore.noclient" else "com.googleusercontent.apps." + id.removeSuffix(".apps.googleusercontent.com")
+}
+
 android {
     namespace = "it.flubatir.coreassistant"
     compileSdk = 34
@@ -11,15 +20,9 @@ android {
         applicationId = "it.flubatir.coreassistant"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
+        versionCode = 1
         versionName = "2.0"
-
-        // Schema di ritorno dell'accesso Google: ricavato da google.ios_client_id in src/main/assets/config.json
-        val cfgText = file("src/main/assets/config.json").takeIf { it.exists() }?.readText() ?: ""
-        val gid = Regex("\"ios_client_id\"\\s*:\\s*\"([^\"]*)\"").find(cfgText)?.groupValues?.get(1) ?: ""
-        manifestPlaceholders["googleScheme"] =
-            if (gid.isBlank()) "com.googleusercontent.apps.notconfigured"
-            else "com.googleusercontent.apps." + gid.removeSuffix(".apps.googleusercontent.com")
+        manifestPlaceholders["googleScheme"] = googleScheme
     }
 
     // Keystore fisso nel repository: ogni build e' firmata uguale, cosi' puoi aggiornare l'app senza disinstallarla.
